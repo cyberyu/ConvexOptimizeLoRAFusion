@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Reorganize StarCoder2-7B matrices by (layer, module) across all checkpoints
+Reorganize StarCoder2-3B matrices by (layer, module) across all checkpoints
 Each unique (layer, module) combination gets an index with results from all available checkpoints
 """
 
@@ -18,7 +18,7 @@ def discover_checkpoint_files(input_dir):
     
     print(f"🔍 Discovering checkpoint files in: {input_dir}")
     
-    # Find all AB_products.safetensors files
+    # Find all AB_products.safetensors files for StarCoder2-3B
     ab_pattern = os.path.join(input_dir, "*_AB_products.safetensors")
     ab_files = glob.glob(ab_pattern)
     
@@ -31,9 +31,9 @@ def discover_checkpoint_files(input_dir):
         filename = os.path.basename(ab_file)
         # Remove the _AB_products.safetensors suffix
         checkpoint_name = filename.replace("_AB_products.safetensors", "")
-        # Remove the starcoder27b_ prefix if present
-        if checkpoint_name.startswith("starcoder27b_"):
-            checkpoint_name = checkpoint_name[len("starcoder27b_"):]
+        # Remove the starcoder23b_ prefix if present
+        if checkpoint_name.startswith("starcoder23b_"):
+            checkpoint_name = checkpoint_name[len("starcoder23b_"):]
         
         checkpoints[checkpoint_name] = {
             'AB_file': ab_file,
@@ -61,7 +61,7 @@ def load_checkpoint_matrices(checkpoint_info):
 def organize_by_layer_module(input_dir, output_dir):
     """Organize matrices by (layer, module) across all checkpoints"""
     
-    print("🔄 REORGANIZING MATRICES BY (LAYER, MODULE)")
+    print("🔄 REORGANIZING STARCODER2-3B MATRICES BY (LAYER, MODULE)")
     print("=" * 60)
     
     # Discover available checkpoints
@@ -155,7 +155,8 @@ def organize_by_layer_module(input_dir, output_dir):
         'structure_info': {
             'detected_layers': len(set(k.split('_')[1] for k in layer_module_index.keys())),
             'detected_modules': len(set(k.split('_')[2] for k in layer_module_index.keys())),
-            'module_types': sorted(list(set(k.split('_')[2] for k in layer_module_index.keys())))
+            'module_types': sorted(list(set(k.split('_')[2] for k in layer_module_index.keys()))),
+            'model': 'StarCoder2-3B'
         }
     }
     
@@ -205,6 +206,15 @@ def verify_organization(organized_dir, indexed_data, expected_checkpoints):
     actual_combinations = len(indexed_data)
     print(f"Total combinations found: {actual_combinations}")
     
+    # For StarCoder2-3B, we expect 30 layers × 4 attention modules = 120 combinations
+    expected_combinations = 30 * 4  # StarCoder2-3B has 30 layers
+    print(f"Expected combinations (30 layers × 4 modules): {expected_combinations}")
+    
+    if actual_combinations == expected_combinations:
+        print(f"✅ Combination count matches expectation!")
+    else:
+        print(f"⚠️  Combination count differs from expectation")
+    
     # Verify each combination has expected checkpoints
     complete_combinations = 0
     for idx, data in indexed_data.items():
@@ -234,17 +244,17 @@ def verify_organization(organized_dir, indexed_data, expected_checkpoints):
 def main():
     """Main organization function"""
     
-    parser = argparse.ArgumentParser(description="Organize LoRA matrices by (layer, module) combinations")
+    parser = argparse.ArgumentParser(description="Organize StarCoder2-3B LoRA matrices by (layer, module) combinations")
     parser.add_argument("--input_dir", 
-                       required=True,
-                       help="Directory containing extracted matrix files")
+                       default="extracted_starcoder23b_matrices",
+                       help="Directory containing extracted StarCoder2-3B matrix files")
     parser.add_argument("--output_dir", 
-                       required=True,
+                       default="extracted_starcoder23b_matrices/organized_by_layer_module",
                        help="Output directory for organized matrices")
     
     args = parser.parse_args()
     
-    print("🚀 STARCODER2-7B MATRIX ORGANIZATION BY (LAYER, MODULE)")
+    print("🚀 STARCODER2-3B MATRIX ORGANIZATION BY (LAYER, MODULE)")
     print("=" * 70)
     print(f"📁 Input directory: {args.input_dir}")
     print(f"📁 Output directory: {args.output_dir}")
@@ -265,6 +275,11 @@ def main():
     print(f"  - Detected checkpoints: {list(checkpoints.keys())}")
     print(f"  - Access pattern: index_XXX_layer_YY_module_matrices.safetensors")
     print(f"  - Master index maps layer_module names to indices")
+    print(f"\n🎯 StarCoder2-3B Structure:")
+    print(f"  - 30 layers (0-29)")
+    print(f"  - 4 attention modules per layer: k_proj, o_proj, q_proj, v_proj")
+    print(f"  - Total expected combinations: 120")
+    print(f"  - Attention-only LoRA (no MLP modules)")
 
 if __name__ == "__main__":
     main()

@@ -4,52 +4,128 @@ LoRA Checkpoint Combiner using Optimized Weights
 
 This script combines LoRA checkpoints using the globally optimized weights found through
 convex optimization. It creates a new checkpoint that represents the optimal linear
-combination of singleline, multiline, and annotated LoRA matrices.
+combination of source LoRA matrices to approximate the target checkpoint.
 
-The output checkpoint follows the same format as the original StarCoder2-7B checkpoints.
+The script automatically detects checkpoint names from the optimization results and
+maps them to the actual checkpoint paths using the YAML configuration file.
 """
 
 import os
 import json
+import yaml
 import torch
 import safetensors.torch
 import numpy as np
 from pathlib import Path
 import argparse
 import shutil
-from typing import Dict, Any
+from typing import Dict, Any, List
 import gc
 
 
-def load_optimization_results(results_file: str) -> Dict[str, float]:
-    """Load the globally optimized weights from results file."""
+def load_checkpoints_config(config_path: str) -> Dict:
+    """Load checkpoint configuration from YAML file."""
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    return config
+
+
+def load_optimization_results(results_file: str) -> Dict[str, Any]:
+    """Load the globally optimized weights and checkpoint info from results file."""
     with open(results_file, 'r') as f:
         results = json.load(f)
     
+    # Extract checkpoint information
+    source_checkpoints = results['statistics']['source_checkpoints']
+    target_checkpoint = results['statistics']['checkpoints'][-1]  # Last one is target
     weights = results['global_weights']
+    
+    print(f"🔍 Found optimization results:")
+    print(f"  Source checkpoints: {source_checkpoints}")
+    print(f"  Target checkpoint: {target_checkpoint}")
+    print(f"  Optimal weights: {weights}")
+    
     return {
-        'singleline': weights[0],
-        'multiline': weights[1], 
-        'annotated': weights[2]
+        'weights': weights,
+        'source_checkpoints': source_checkpoints,
+        'target_checkpoint': target_checkpoint,
+        'results': results
     }
 
 
-def load_checkpoint_matrices(checkpoint_path: str) -> Dict[str, torch.Tensor]:
-    """Load A and B matrices from a checkpoint."""
-    print(f"📦 Loading checkpoint: {os.path.basename(checkpoint_path)}")
+def map_checkpoints_to_paths(opt_results: Dict, config: Dict) -> Dict[str, str]:
+    """Map optimization checkpoint names to actual file paths from config."""
     
-    # Load A matrices
+    print(f"\n🗺️  Mapping checkpoints to paths...")
+    
+    checkpoint_paths = {}
+    config_checkpoints = config.get('checkpoints', {})
+    
+    # Try to map each source checkpoint name to a config entry
+    for checkpoint_name in opt_results['source_checkpoints']:
+        found_path = None
+        
+        # Try exact match first
+        if checkpoint_name in config_checkpoints:
+            found_path = config_checkpoints[checkpoint_name]['path']
+        else:
+            # Try partial matching (look for keywords in checkpoint name)
+            for config_name, config_info in config_checkpoints.items():
+                if any(keyword in checkpoint_name.lower() for keyword in config_name.lower().split('_')):
+                    found_path = config_info['path']
+                    print(f"  📋 Mapped {checkpoint_name} -> {config_name} ({found_path})")
+                    break
+        
+        if found_path:
+            # Expand paths
+            expanded_path = os.path.expanduser(os.path.expandvars(found_path))
+            checkpoint_paths[checkpoint_name] = os.path.abspath(expanded_path)
+        else:
+            print(f"  ⚠️  Could not map checkpoint: {checkpoint_name}")
+    
+    # Map target checkpoint
+    target_name = opt_results['target_checkpoint']
+    target_path = None
+    
+    if target_name in config_checkpoints:
+        target_path = config_checkpoints[target_name]['path']
+    else:
+        # Try partial matching for target
+        for config_name, config_info in config_checkpoints.items():
+            if any(keyword in target_name.lower() for keyword in config_name.lower().split('_')):
+                target_path = config_info['path']
+                print(f"  🎯 Mapped target {target_name} -> {config_name} ({target_path})")
+                break
+    
+    if target_path:
+        expanded_path = os.path.expanduser(os.path.expandvars(target_path))
+        checkpoint_paths[target_name] = os.path.abspath(expanded_path)
+    
+    print(f"  ✅ Mapped {len(checkpoint_paths)} checkpoints")
+    return checkpoint_paths
+
+
+def load_checkpoint_matrices(extracted_dir: str, checkpoint_name: str) -> Dict[str, torch.Tensor]:
+    """Load A and B matrices from the extracted matrices directory."""
+    print(f"📦 Loading matrices for: {checkpoint_name}")
+    
+    # Find A and B matrix files for this checkpoint
     a_matrices_file = None
     b_matrices_file = None
     
-    for file in os.listdir(checkpoint_path):
-        if file.endswith('_A_matrices.safetensors'):
-            a_matrices_file = os.path.join(checkpoint_path, file)
-        elif file.endswith('_B_matrices.safetensors'):
-            b_matrices_file = os.path.join(checkpoint_path, file)
+    # Look for files matching the checkpoint name
+    for file in os.listdir(extracted_dir):
+        if checkpoint_name in file:
+            if file.endswith('_A_matrices.safetensors'):
+                a_matrices_file = os.path.join(extracted_dir, file)
+            elif file.endswith('_B_matrices.safetensors'):
+                b_matrices_file = os.path.join(extracted_dir, file)
     
     if not a_matrices_file or not b_matrices_file:
-        raise FileNotFoundError(f"Could not find A/B matrix files in {checkpoint_path}")
+        raise FileNotFoundError(f"Could not find A/B matrix files for {checkpoint_name} in {extracted_dir}")
+    
+    print(f"  📁 Loading A matrices from: {os.path.basename(a_matrices_file)}")
+    print(f"  📁 Loading B matrices from: {os.path.basename(b_matrices_file)}")
     
     a_matrices = safetensors.torch.load_file(a_matrices_file)
     b_matrices = safetensors.torch.load_file(b_matrices_file)
@@ -58,7 +134,7 @@ def load_checkpoint_matrices(checkpoint_path: str) -> Dict[str, torch.Tensor]:
     return {'A': a_matrices, 'B': b_matrices}
 
 
-def combine_matrices(matrices_dict: Dict[str, Dict], weights: Dict[str, float]) -> Dict[str, torch.Tensor]:
+def combine_matrices(matrices_dict: Dict[str, Dict], weights: List[float], source_checkpoints: List[str]) -> Dict[str, torch.Tensor]:
     """
     Combine A and B matrices using optimized weights.
     
@@ -66,12 +142,11 @@ def combine_matrices(matrices_dict: Dict[str, Dict], weights: Dict[str, float]) 
                        w1*B1 + w2*B2 + w3*B3 for B matrices
     """
     print(f"\n🔄 Combining matrices using optimized weights:")
-    print(f"  w_singleline = {weights['singleline']:.6f}")
-    print(f"  w_multiline  = {weights['multiline']:.6f}")
-    print(f"  w_annotated  = {weights['annotated']:.6f}")
+    for i, (checkpoint, weight) in enumerate(zip(source_checkpoints, weights)):
+        print(f"  w{i+1} ({checkpoint}): {weight:.6f}")
     
     # Get module names from first checkpoint
-    first_checkpoint = list(matrices_dict.keys())[0]
+    first_checkpoint = source_checkpoints[0]
     a_keys = list(matrices_dict[first_checkpoint]['A'].keys())
     b_keys = list(matrices_dict[first_checkpoint]['B'].keys())
     
@@ -82,23 +157,18 @@ def combine_matrices(matrices_dict: Dict[str, Dict], weights: Dict[str, float]) 
     
     # Combine A matrices
     for key in a_keys:
-        a_singleline = matrices_dict['singleline']['A'][key]
-        a_multiline = matrices_dict['multiline']['A'][key]
-        a_annotated = matrices_dict['annotated']['A'][key]
-        
-        combined_a[key] = (weights['singleline'] * a_singleline + 
-                          weights['multiline'] * a_multiline + 
-                          weights['annotated'] * a_annotated)
+        combined_a[key] = torch.zeros_like(matrices_dict[first_checkpoint]['A'][key])
+        for i, checkpoint in enumerate(source_checkpoints):
+            combined_a[key] += weights[i] * matrices_dict[checkpoint]['A'][key]
     
-    # Combine B matrices
+    # Combine B matrices  
     for key in b_keys:
-        b_singleline = matrices_dict['singleline']['B'][key]
-        b_multiline = matrices_dict['multiline']['B'][key]
-        b_annotated = matrices_dict['annotated']['B'][key]
-        
-        combined_b[key] = (weights['singleline'] * b_singleline + 
-                          weights['multiline'] * b_multiline + 
-                          weights['annotated'] * b_annotated)
+        combined_b[key] = torch.zeros_like(matrices_dict[first_checkpoint]['B'][key])
+        for i, checkpoint in enumerate(source_checkpoints):
+            combined_b[key] += weights[i] * matrices_dict[checkpoint]['B'][key]
+    
+    print(f"  ✅ Combined {len(combined_a)} A matrices and {len(combined_b)} B matrices")
+    return {'A': combined_a, 'B': combined_b}
     
     print(f"  ✅ Combined {len(combined_a)} A matrices and {len(combined_b)} B matrices")
     
@@ -108,7 +178,7 @@ def combine_matrices(matrices_dict: Dict[str, Dict], weights: Dict[str, float]) 
 def create_combined_checkpoint(combined_matrices: Dict[str, torch.Tensor], 
                              template_checkpoint: str,
                              output_checkpoint: str,
-                             weights: Dict[str, float]) -> None:
+                             opt_results: Dict[str, Any]) -> None:
     """
     Create a new checkpoint directory with combined LoRA matrices.
     Uses the template checkpoint as a base and replaces the LoRA matrices.
@@ -175,33 +245,59 @@ def create_combined_checkpoint(combined_matrices: Dict[str, torch.Tensor],
     print(f"  ✅ Saved combined adapter_model.safetensors with {len(combined_tensors)} tensors")
     
     # Create a README with combination info
+    weights = opt_results['weights']
+    source_checkpoints = opt_results['source_checkpoints']
+    target_checkpoint = opt_results['target_checkpoint']
+    results = opt_results['results']
+    
     readme_content = f"""# Optimally Combined LoRA Checkpoint
 
-This checkpoint was created by combining three task-specific LoRA checkpoints using
+This checkpoint was created by combining {len(source_checkpoints)} task-specific LoRA checkpoints using
 globally optimized weights found through convex optimization.
 
-## Combination Weights:
-- Singleline: {weights['singleline']:.6f} ({weights['singleline']*100:.1f}%)
-- Multiline:  {weights['multiline']:.6f} ({weights['multiline']*100:.1f}%)
-- Annotated:  {weights['annotated']:.6f} ({weights['annotated']*100:.1f}%)
+## Source Checkpoints:
+"""
+    
+    for i, (checkpoint, weight) in enumerate(zip(source_checkpoints, weights)):
+        readme_content += f"- {checkpoint}: {weight:.6f} ({weight*100:.1f}%)\n"
+    
+    readme_content += f"""
+## Target Checkpoint:
+- {target_checkpoint}
 
 ## Optimization Details:
-- Method: Constrained convex optimization with Lagrange multipliers
+- Method: {results['method']}
 - Constraint: w1 + w2 + w3 = 1, wi ≥ 0
 - Objective: Minimize ||w1*AB1 + w2*AB2 + w3*AB3 - AB_target||²
-- Total elements optimized: 1,509,949,440
-- Final L2 error: 158.061809
+- Total elements optimized: {results['statistics']['total_elements']:,}
+- Total combinations: {results['statistics']['total_combinations']}
+- Final L2 error: {results['evaluation']['residual_norm']:.6f}
+- Relative error: {results['evaluation']['relative_error']:.6f}
 
 ## Architecture:
 - Model: StarCoder2-7B
-- LoRA: Attention-only (128 modules: 32 layers × 4 attention types)
-- Rank: 8
-- Alpha: 8
+- LoRA: Attention-only ({results['statistics']['total_combinations']} modules: 32 layers × 4 attention types)
+- Optimization time: {results['computational_info']['total_time_seconds']:.1f} seconds
 
 ## Usage:
 This checkpoint can be used as a drop-in replacement for any of the original
 task-specific checkpoints. It represents the optimal linear combination that
-best approximates the concatenation-trained model.
+best approximates the target model.
+
+```python
+from transformers import AutoModelForCausalLM
+from peft import PeftModel
+
+# Load base model
+base_model = AutoModelForCausalLM.from_pretrained("bigcode/starcoder2-7b")
+
+# Load optimally combined LoRA
+model = PeftModel.from_pretrained(base_model, "path/to/this/checkpoint")
+
+# Use for inference
+inputs = tokenizer("def fibonacci(n):", return_tensors="pt")
+outputs = model.generate(**inputs, max_length=100)
+```
 """
     
     readme_path = os.path.join(output_checkpoint, "COMBINATION_README.md")
@@ -211,23 +307,20 @@ best approximates the concatenation-trained model.
 
 
 def main():
+    """Main checkpoint combination function"""
+    
     parser = argparse.ArgumentParser(description="Combine LoRA checkpoints using optimized weights")
     parser.add_argument("--extracted_dir", 
-                       default="extracted_starcoder27b_matrices",
+                       default="extracted_matrices",
                        help="Directory containing extracted matrices")
     parser.add_argument("--results_file",
                        default="memory_efficient_global_optimization/memory_efficient_global_results.json",
                        help="Path to optimization results file")
-    parser.add_argument("--template_checkpoint",
-                       default="starcoder27b/concatenationTrained/checkpoint-40000",
-                       help="Template checkpoint directory (for structure)")
     parser.add_argument("--output_checkpoint",
                        default="optimally_combined_checkpoint",
                        help="Output directory for combined checkpoint")
-    parser.add_argument("--checkpoint_names",
-                       nargs=3,
-                       default=["singleline", "multiline", "annotated"],
-                       help="Names of the three checkpoints to combine")
+    parser.add_argument("--template_checkpoint",
+                       help="Template checkpoint directory (auto-detected if not specified)")
     
     args = parser.parse_args()
     
@@ -235,82 +328,84 @@ def main():
     print("=" * 60)
     print(f"📁 Extracted matrices dir: {args.extracted_dir}")
     print(f"📊 Optimization results: {args.results_file}")
-    print(f"📋 Template checkpoint: {args.template_checkpoint}")
     print(f"📦 Output checkpoint: {args.output_checkpoint}")
-    print(f"🔗 Combining: {args.checkpoint_names}")
     
     # Load optimization results
     print(f"\n📊 Loading optimization results...")
     if not os.path.exists(args.results_file):
         raise FileNotFoundError(f"Results file not found: {args.results_file}")
     
-    weights = load_optimization_results(args.results_file)
-    print(f"  ✅ Loaded optimal weights: {weights}")
+    opt_results = load_optimization_results(args.results_file)
     
     # Verify weights sum to 1
-    weight_sum = sum(weights.values())
+    weight_sum = sum(opt_results['weights'])
     print(f"  📐 Weight sum: {weight_sum:.10f}")
     if abs(weight_sum - 1.0) > 1e-10:
         print(f"  ⚠️  Warning: Weights don't sum to 1!")
     
-    # Load matrices from all checkpoints
-    print(f"\n📦 Loading matrices from checkpoints...")
+    # Determine template checkpoint
+    template_checkpoint = args.template_checkpoint
+    if template_checkpoint is None:
+        # Since we don't have YAML config mapping, use a hardcoded path to one of the actual checkpoints
+        # We'll use the target checkpoint path from the optimization results
+        target_name = opt_results['target_checkpoint']
+        
+        # Map the target checkpoint name to the actual directory
+        if 'combinedThree' in target_name:
+            template_checkpoint = "/mnt/teamssd/compressed_LLM_tbricks/finetune_starcoder2_combinedThree/checkpoint-40000"
+        elif 'singleline' in target_name:
+            template_checkpoint = "/mnt/teamssd/compressed_LLM_tbricks/finetune_starcoder2_singleline_new/checkpoint-40000"
+        elif 'multiline' in target_name:
+            template_checkpoint = "/mnt/teamssd/compressed_LLM_tbricks/finetune_starcoder2_multiline_new/checkpoint-40000"
+        elif 'olddata' in target_name:
+            template_checkpoint = "/mnt/teamssd/compressed_LLM_tbricks/finetune_starcoder2_olddata_new/checkpoint-40000"
+        else:
+            # Default fallback
+            template_checkpoint = "/mnt/teamssd/compressed_LLM_tbricks/finetune_starcoder2_combinedThree/checkpoint-40000"
+        
+        print(f"🎯 Using target checkpoint as template: {template_checkpoint}")
+    
+    print(f"📋 Template checkpoint: {template_checkpoint}")
+    
+    # Verify template checkpoint exists
+    if not os.path.exists(template_checkpoint):
+        raise FileNotFoundError(f"Template checkpoint not found: {template_checkpoint}")
+        
+    # Verify it has the required adapter_model.safetensors
+    adapter_file = os.path.join(template_checkpoint, "adapter_model.safetensors")
+    if not os.path.exists(adapter_file):
+        raise FileNotFoundError(f"adapter_model.safetensors not found in template: {adapter_file}")
+    
+    # Load matrices from all source checkpoints
+    print(f"\n📦 Loading matrices from source checkpoints...")
     matrices_dict = {}
     
-    for name in args.checkpoint_names:
-        checkpoint_dir = None
-        # Find the checkpoint directory
-        for item in os.listdir(args.extracted_dir):
-            if name.lower() in item.lower() and item.endswith('_matrices.safetensors'):
-                # Found individual matrix files, construct path
-                checkpoint_dir = args.extracted_dir
-                break
-        
-        if checkpoint_dir is None:
-            # Try looking for subdirectories
-            for item in os.listdir(args.extracted_dir):
-                item_path = os.path.join(args.extracted_dir, item)
-                if os.path.isdir(item_path) and name.lower() in item.lower():
-                    checkpoint_dir = item_path
-                    break
-        
-        if checkpoint_dir is None:
-            raise FileNotFoundError(f"Could not find checkpoint for: {name}")
-        
-        matrices_dict[name] = load_checkpoint_matrices(checkpoint_dir)
+    for checkpoint_name in opt_results['source_checkpoints']:
+        matrices_dict[checkpoint_name] = load_checkpoint_matrices(args.extracted_dir, checkpoint_name)
     
     # Combine matrices using optimal weights
-    print(f"\n🔄 Combining matrices...")
-    combined_matrices = combine_matrices(matrices_dict, weights)
+    print(f"\n⚖️  Combining matrices...")
+    combined_matrices = combine_matrices(
+        matrices_dict, 
+        opt_results['weights'], 
+        opt_results['source_checkpoints']
+    )
     
     # Create combined checkpoint
     print(f"\n🏗️  Creating combined checkpoint...")
-    create_combined_checkpoint(combined_matrices, args.template_checkpoint, 
-                             args.output_checkpoint, weights)
+    create_combined_checkpoint(
+        combined_matrices,
+        template_checkpoint,
+        args.output_checkpoint, 
+        opt_results
+    )
     
-    # Verify output
-    print(f"\n✅ COMBINATION COMPLETE!")
-    print("=" * 60)
-    print(f"📁 Combined checkpoint saved to: {args.output_checkpoint}")
-    print(f"📊 Checkpoint contains:")
-    
-    if os.path.exists(args.output_checkpoint):
-        files = os.listdir(args.output_checkpoint)
-        for file in sorted(files):
-            file_path = os.path.join(args.output_checkpoint, file)
-            if os.path.isfile(file_path):
-                size = os.path.getsize(file_path)
-                print(f"  📄 {file} ({size:,} bytes)")
-    
-    print(f"\n💡 USAGE:")
-    print(f"  This checkpoint can be used as a drop-in replacement for:")
-    print(f"  - Original concatenationTrained checkpoint")
-    print(f"  - Any task-specific checkpoint")
-    print(f"  It represents the optimal linear combination found through convex optimization.")
-    
-    print(f"\n🎯 OPTIMAL COMBINATION:")
-    for name, weight in weights.items():
-        print(f"  {name:12}: {weight:.6f} ({weight*100:.1f}%)")
+    print(f"\n🎉 SUCCESS!")
+    print(f"  📦 Combined checkpoint created: {args.output_checkpoint}")
+    print(f"  🎯 Optimal combination of {len(opt_results['source_checkpoints'])} checkpoints")
+    print(f"  ⚖️  Weights: {[f'{w:.3f}' for w in opt_results['weights']]}")
+    print(f"  📊 Total combinations processed: {opt_results['results']['statistics']['total_combinations']}")
+    print(f"  🔢 Total elements optimized: {opt_results['results']['statistics']['total_elements']:,}")
 
 
 if __name__ == "__main__":

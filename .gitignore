@@ -1,0 +1,108 @@
+# JSON files
+*.json
+
+# Checkpoint and model files
+*checkpoint*/
+*checkpoint*
+checkpoint-*/
+checkpoint*
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+
+# Optimization results
+*results*/
+*optimization*/
+*combined*/
+*extracted*/
+
+# Python cache and temp files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Data and cache directories
+.cache/
+*.log
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Large data files
+*.csv
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Specific to this project
+adaptive_*
+extracted_*
+memory_efficient_*
+optimally_*
+starcoder*
+validation_*
+debug_*
+test_*
+check_*
+create_*
+combine_*
+convert_*
+diagnose_*
+fix_*
+validate_*
+visualize_*

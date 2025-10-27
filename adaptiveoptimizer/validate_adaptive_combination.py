@@ -30,12 +30,12 @@ def validate_adaptive_combination():
     # Load combined matrices
     print("📦 Loading combined matrices...")
     combined_matrices = safetensors.torch.load_file(
-        'combined_adaptive_checkpoint_corrected/adaptive_combined_matrices.safetensors'
+        'adaptive_combined_checkpoint_v2/adaptive_combined_matrices.safetensors'
     )
     print(f"  Loaded {len(combined_matrices)} combined matrices")
     
     # Load master index for organized matrices access
-    with open('extracted_starcoder27b_matrices/organized_by_layer_module/master_index.json', 'r') as f:
+    with open('extracted_matrices/organized_by_layer_module/master_index.json', 'r') as f:
         master_index = json.load(f)
     
     print("\n🧮 Calculating reconstruction errors...")
@@ -49,10 +49,10 @@ def validate_adaptive_combination():
             # Load target matrix (concatenationTrained)
             layer_index = master_index['index_mapping'][layer_module]
             safetensors_file = f"index_{layer_index:03d}_{layer_module}_matrices.safetensors"
-            safetensors_path = f"extracted_starcoder27b_matrices/organized_by_layer_module/{safetensors_file}"
+            safetensors_path = f"extracted_matrices/organized_by_layer_module/{safetensors_file}"
             
             target_matrices = safetensors.torch.load_file(safetensors_path)
-            target_matrix = target_matrices['concatenationTrained']
+            target_matrix = target_matrices['finetune_starcoder2_combinedThree_checkpoint-40000']
             
             # Get combined matrix
             if layer_module in combined_matrices:

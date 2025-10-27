@@ -17,18 +17,24 @@ This directory contains scripts and tools for optimally combining LoRA (Low-Rank
 
 ### Required Dependencies
 ```bash
-pip install torch safetensors numpy scipy
+pip install torch safetensors numpy scipy pyyaml
 ```
+
+### Required Configuration
+Create a YAML configuration file (`../LoRAExtraction/checkpoints_config.yml`) that specifies the paths to your LoRA checkpoints. This replaces the need to have all checkpoints in a single directory structure.
 
 ### Required Directory Structure
 ```
 LoRATaskVectors/
-├── starcoder27b/                    # Original StarCoder2-7B checkpoints
+├── starcoder27b/                    # Can be anywhere now (configured in YAML)
 │   ├── annotated/checkpoint-40000/
 │   ├── multiline/checkpoint-40000/
 │   ├── singleline/checkpoint-40000/
 │   └── concatenationTrained/checkpoint-40000/  # Target to approximate
-├── loramatrixextraction/            # Matrix extraction scripts
+├── LoRAExtraction/                  # Matrix extraction scripts
+│   ├── extract_starcoder27b_matrices.py
+│   ├── organize_matrices_by_layer_module.py
+│   └── checkpoints_config.yml      # NEW: Configuration file
 └── optimizer/                      # This directory
 ```
 
@@ -38,18 +44,81 @@ LoRATaskVectors/
 
 **Purpose**: Extract A, B, and AB matrices from all StarCoder2-7B LoRA checkpoints.
 
+### Configuration Setup:
+First, create or modify the checkpoint configuration file. You can either:
+
+**Option 1: Create a default configuration file**
+```bash
+python3 ../LoRAExtraction/extract_starcoder27b_matrices.py --create_default_config --config ../LoRAExtraction/checkpoints_config.yml
+```
+
+**Option 2: Manually create the configuration file `../LoRAExtraction/checkpoints_config.yml`:**
+
+```yaml
+# StarCoder2-7B LoRA Checkpoints Configuration
+checkpoints:
+  annotated:
+    path: "../starcoder27b/annotated/checkpoint-40000"
+    description: "Annotated training data checkpoint"
+    
+  multiline:
+    path: "../starcoder27b/multiline/checkpoint-40000"
+    description: "Multiline training data checkpoint"
+    
+  singleline:
+    path: "../starcoder27b/singleline/checkpoint-40000"
+    description: "Singleline training data checkpoint"
+    
+  concatenationTrained:
+    path: "../starcoder27b/concatenationTrained/checkpoint-40000"
+    description: "Concatenation trained checkpoint (target for optimization)"
+
+settings:
+  verify_paths: true
+  verbose_paths: true
+```
+
+**Then edit the paths** in the generated/created file to match your actual checkpoint locations.
+
 ### Command:
 ```bash
-python3 ../loramatrixextraction/extract_starcoder27b_matrices.py \
+python3 ../LoRAExtraction/extract_starcoder27b_matrices.py \
+    --config ../LoRAExtraction/checkpoints_config.yml \
+    --output_dir ../extracted_starcoder27b_matrices
+```
+
+### Alternative Commands:
+
+**Process specific checkpoints only:**
+```bash
+python3 ../LoRAExtraction/extract_starcoder27b_matrices.py \
+    --config ../LoRAExtraction/checkpoints_config.yml \
+    --output_dir ../extracted_starcoder27b_matrices \
+    --checkpoints annotated multiline singleline
+```
+
+**Verbose output for debugging:**
+```bash
+python3 ../LoRAExtraction/extract_starcoder27b_matrices.py \
+    --config ../LoRAExtraction/checkpoints_config.yml \
+    --output_dir ../extracted_starcoder27b_matrices \
+    --verbose
+```
+
+**Backward compatibility (deprecated):**
+```bash
+python3 ../LoRAExtraction/extract_starcoder27b_matrices.py \
     --starcoder_dir ../starcoder27b \
     --output_dir ../extracted_starcoder27b_matrices
 ```
 
 ### What This Does:
+- Loads checkpoint paths from YAML configuration file
+- Validates that all specified checkpoint paths exist and contain required files
 - Extracts LoRA A matrices (rank × input_dim) and B matrices (output_dim × rank)
 - Computes AB products: ΔW = B @ A * scaling_factor
-- Processes 4 checkpoints: annotated, multiline, singleline, concatenationTrained
-- Saves 512 total matrices (128 per checkpoint)
+- Processes all checkpoints defined in configuration (typically 4: annotated, multiline, singleline, concatenationTrained)
+- Saves matrices with checkpoint-specific naming based on configuration
 
 ### Expected Output:
 ```
@@ -59,8 +128,11 @@ extracted_starcoder27b_matrices/
 ├── starcoder27b_annotated_checkpoint-40000_AB_products.safetensors
 ├── starcoder27b_annotated_checkpoint-40000_metadata.json
 ├── [similar files for multiline, singleline, concatenationTrained]
-└── STARCODER27B_EXTRACTION_SUMMARY.md
+├── STARCODER27B_EXTRACTION_SUMMARY.md
+└── checkpoints_config.yml  # Copy of configuration used
 ```
+
+**Note**: File naming now uses the checkpoint names from your YAML configuration, providing more flexibility in organizing your checkpoints.
 
 ### Key Information:
 - **Architecture**: StarCoder2-7B uses attention-only LoRA (not MLP)
@@ -75,16 +147,18 @@ extracted_starcoder27b_matrices/
 
 ### Command:
 ```bash
-python3 ../loramatrixextraction/organize_matrices_by_layer_module.py \
+python3 ../LoRAExtraction/organize_matrices_by_layer_module.py \
     --input_dir ../extracted_starcoder27b_matrices \
     --output_dir ../extracted_starcoder27b_matrices/organized_by_layer_module
 ```
 
 ### What This Does:
-- Groups matrices by (layer, module) combinations
-- Creates 128 indexed combinations (0-127)
-- Each index contains AB matrices from all 4 checkpoints
+- Automatically discovers all available checkpoint files in the input directory
+- Groups matrices by (layer, module) combinations across all found checkpoints
+- Creates indexed combinations (0 to N-1, where N is the number of unique layer-module pairs)
+- Each index contains AB matrices from all available checkpoints
 - Generates master index mapping layer_module names to indices
+- Works with any checkpoint naming convention (no hardcoded paths)
 
 ### Expected Output:
 ```
@@ -292,7 +366,53 @@ print(f"Annotated: {weights[2]:.1%}")
 
 ### Common Issues:
 
-#### 1. Memory Errors
+#### 1. Configuration File Issues
+**Problem**: YAML configuration file not found or malformed
+**Solution**: 
+```bash
+# Check if config file exists
+ls ../LoRAExtraction/checkpoints_config.yml
+
+# Validate YAML syntax
+python3 -c "import yaml; yaml.safe_load(open('../LoRAExtraction/checkpoints_config.yml'))"
+
+# Create default configuration
+cat > ../LoRAExtraction/checkpoints_config.yml << 'EOF'
+checkpoints:
+  annotated:
+    path: "../starcoder27b/annotated/checkpoint-40000"
+    description: "Annotated training data checkpoint"
+  multiline:
+    path: "../starcoder27b/multiline/checkpoint-40000"
+    description: "Multiline training data checkpoint"
+  singleline:
+    path: "../starcoder27b/singleline/checkpoint-40000"
+    description: "Singleline training data checkpoint"
+  concatenationTrained:
+    path: "../starcoder27b/concatenationTrained/checkpoint-40000"
+    description: "Concatenation trained checkpoint"
+settings:
+  verify_paths: true
+  verbose_paths: true
+EOF
+```
+
+#### 2. Checkpoint Path Validation Errors
+**Problem**: Checkpoint paths in YAML don't exist or are missing required files
+**Solution**:
+```bash
+# Use verbose mode to see detailed path validation
+python3 ../LoRAExtraction/extract_starcoder27b_matrices.py \
+    --config ../LoRAExtraction/checkpoints_config.yml \
+    --output_dir ../extracted_starcoder27b_matrices \
+    --verbose
+
+# Check individual checkpoint directories
+ls -la /path/to/your/checkpoint/directory/
+# Should contain: adapter_model.safetensors, adapter_config.json
+```
+
+#### 3. Memory Errors
 **Problem**: Out of memory during optimization
 **Solution**: The memory-efficient script should handle this, but if issues persist:
 ```bash
@@ -300,20 +420,20 @@ print(f"Annotated: {weights[2]:.1%}")
 # The current implementation uses O(1) memory
 ```
 
-#### 2. Missing Dependencies
-**Problem**: Import errors for torch, safetensors, etc.
+#### 4. Missing Dependencies
+**Problem**: Import errors for torch, safetensors, yaml, etc.
 **Solution**:
 ```bash
-pip install torch safetensors numpy scipy
+pip install torch safetensors numpy scipy pyyaml
 ```
 
-#### 3. Key Mapping Errors
+#### 5. Key Mapping Errors
 **Problem**: Matrix keys don't match between extracted and checkpoint formats
 **Solution**: This should be handled automatically, but verify:
 - Extracted format: `model.layers.X.self_attn.Y_proj`
 - Checkpoint format: `base_model.model.model.layers.X.self_attn.Y_proj.lora_A.weight`
 
-#### 4. File Not Found Errors
+#### 6. File Not Found Errors
 **Problem**: Cannot find input directories or files
 **Solution**: Ensure you've run previous steps and paths are correct:
 ```bash
@@ -327,11 +447,28 @@ ls ../extracted_starcoder27b_matrices/organized_by_layer_module/
 ls memory_efficient_global_optimization/
 ```
 
-#### 5. Checkpoint Size Issues
+#### 7. Checkpoint Size Issues
 **Problem**: Combined checkpoint seems too large/small
 **Solution**: Verify the adapter_model.safetensors size:
 - **Expected size**: ~29.4 MB
 - **Contains**: 256 tensors (128 A + 128 B matrices)
+
+#### 8. Configuration Validation Issues
+**Problem**: Need to check configuration without running extraction
+**Solution**: Use helper commands:
+```bash
+# Create a default configuration file
+python3 ../LoRAExtraction/extract_starcoder27b_matrices.py --create_default_config
+
+# Test configuration with verbose validation
+python3 ../LoRAExtraction/extract_starcoder27b_matrices.py \
+    --config ../LoRAExtraction/checkpoints_config.yml \
+    --checkpoints annotated  # Test with just one checkpoint
+    --verbose \
+    --output_dir /tmp/test_extraction  # Use temporary directory
+```
+
+---
 
 ### Performance Tips:
 
@@ -339,6 +476,8 @@ ls memory_efficient_global_optimization/
 2. **Ensure sufficient RAM** (8GB+ recommended) for large matrix operations
 3. **Run on GPU-enabled machine** for faster tensor operations (optional)
 4. **Clear intermediate results** to save disk space between steps
+5. **Use YAML validation** to catch configuration errors early
+6. **Test with single checkpoint first** before processing all checkpoints
 
 ---
 

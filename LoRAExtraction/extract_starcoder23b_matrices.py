@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-StarCoder2-7B LoRA A/B Matrix Extractor
+StarCoder2-3B LoRA A/B Matrix Extractor
 
-This script extracts LoRA A and B matrices from StarCoder2-7B checkpoint files and computes
+This script extracts LoRA A and B matrices from StarCoder2-3B checkpoint files and computes
 their products (A*B) to get the LoRA change matrices. It processes all four
-StarCoder2-7B checkpoints: annotated, concatenationTrained, multiline, and singleline.
+StarCoder2-3B checkpoints: annotated, concatenationTrained, multiline, and singleline.
 
 The LoRA decomposition works as: ΔW = B @ A * (alpha/r)
 Where:
@@ -42,23 +42,23 @@ def load_checkpoints_config(config_path: str) -> Dict:
 
 
 def create_default_config(config_path: str) -> None:
-    """Create a default YAML configuration file."""
+    """Create a default YAML configuration file for StarCoder2-3B."""
     default_config = {
         'checkpoints': {
             'annotated': {
-                'path': '../starcoder27b/annotated/checkpoint-40000',
+                'path': '/mnt/teamssd/compressed_LLM_tbricks/finetune_starcoder_3b_AnnotatedOnly/checkpoint-40000',
                 'description': 'Annotated training data checkpoint'
             },
             'multiline': {
-                'path': '../starcoder27b/multiline/checkpoint-40000',
+                'path': '/mnt/teamssd/compressed_LLM_tbricks/finetune_starcoder_3b_MultiLineOnly/checkpoint-40000/',
                 'description': 'Multiline training data checkpoint'
             },
             'singleline': {
-                'path': '../starcoder27b/singleline/checkpoint-40000',
+                'path': '/mnt/teamssd/compressed_LLM_tbricks/finetune_starcoder_3b_SingleLineOnly/checkpoint-40000/',
                 'description': 'Singleline training data checkpoint'
             },
             'concatenationTrained': {
-                'path': '../starcoder27b/concatenationTrained/checkpoint-40000',
+                'path': '/mnt/teamssd/compressed_LLM_tbricks/finetune_starcoder2_3b_triple/checkpoint-40000',
                 'description': 'Concatenation trained checkpoint (target for optimization)'
             }
         },
@@ -100,50 +100,42 @@ def validate_checkpoint_paths(config: Dict, verbose: bool = False) -> Dict[str, 
     """
     checkpoints = config.get('checkpoints', {})
     settings = config.get('settings', {})
-    verify_paths = settings.get('verify_paths', True)
-    verbose_paths = settings.get('verbose_paths', False) or verbose
-    expand_env_vars = settings.get('expand_env_vars', True)
-    validation_settings = settings.get('validation', {})
     
-    # Default required files
-    required_files = validation_settings.get('required_files', [
-        "adapter_model.safetensors", 
-        "adapter_config.json"
-    ])
-    optional_files = validation_settings.get('optional_files', [])
+    verify_paths = settings.get('verify_paths', True)
+    verbose_paths = verbose or settings.get('verbose_paths', False)
+    expand_env_vars = settings.get('expand_env_vars', True)
+    
+    validation_config = settings.get('validation', {})
+    required_files = validation_config.get('required_files', ['adapter_model.safetensors', 'adapter_config.json'])
+    optional_files = validation_config.get('optional_files', [])
     
     validated_checkpoints = {}
     
-    print(f"\n📋 Validating checkpoint paths:")
-    print("-" * 50)
+    print(f"🔍 Validating {len(checkpoints)} checkpoint paths...")
     
     for name, checkpoint_info in checkpoints.items():
-        path = checkpoint_info.get('path')
-        description = checkpoint_info.get('description', 'No description')
+        if isinstance(checkpoint_info, dict):
+            path = checkpoint_info.get('path', '')
+            description = checkpoint_info.get('description', 'No description')
+        else:
+            path = str(checkpoint_info)
+            description = 'No description'
         
-        if not path:
-            print(f"❌ {name}: No path specified")
-            continue
-        
-        # Expand environment variables if enabled
+        # Expand environment variables and user home
         if expand_env_vars:
-            path = os.path.expandvars(path)
-            
-        # Expand user home directory (~)
-        expanded_path = os.path.expanduser(path)
-        absolute_path = os.path.abspath(expanded_path)
+            path = os.path.expanduser(os.path.expandvars(path))
+        
+        # Convert to absolute path
+        absolute_path = os.path.abspath(path)
         
         if verbose_paths:
-            print(f"🔍 {name}:")
-            print(f"   Description: {description}")
-            print(f"   Original path: {checkpoint_info.get('path')}")
-            if expand_env_vars and path != checkpoint_info.get('path'):
-                print(f"   Expanded path: {path}")
-            print(f"   Absolute path: {absolute_path}")
+            print(f"\n📋 {name}: {description}")
+            print(f"   Raw path: {checkpoint_info.get('path', path) if isinstance(checkpoint_info, dict) else path}")
+            print(f"   Resolved: {absolute_path}")
         
         if verify_paths:
             if os.path.exists(absolute_path):
-                # Check required files
+                # Verify required files exist
                 missing_required = []
                 for req_file in required_files:
                     file_path = os.path.join(absolute_path, req_file)
@@ -182,7 +174,7 @@ def validate_checkpoint_paths(config: Dict, verbose: bool = False) -> Dict[str, 
 
 def extract_lora_matrices(checkpoint_path: str, output_dir: str) -> Dict[str, torch.Tensor]:
     """
-    Extract LoRA A and B matrices from a StarCoder2-7B checkpoint and compute their products.
+    Extract LoRA A and B matrices from a StarCoder2-3B checkpoint and compute their products.
     
     Args:
         checkpoint_path: Path to the LoRA checkpoint directory
@@ -191,7 +183,7 @@ def extract_lora_matrices(checkpoint_path: str, output_dir: str) -> Dict[str, to
     Returns:
         Dictionary containing A matrices, B matrices, and AB products
     """
-    print(f"\n🔍 Processing StarCoder2-7B checkpoint: {checkpoint_path}")
+    print(f"\n🔍 Processing StarCoder2-3B checkpoint: {checkpoint_path}")
     
     # Load configuration
     config = load_lora_config(checkpoint_path)
@@ -245,7 +237,7 @@ def extract_lora_matrices(checkpoint_path: str, output_dir: str) -> Dict[str, to
         mlp_target_modules = [m for m in target_modules if m in ['gate_proj', 'up_proj', 'down_proj']]
         if mlp_target_modules:
             print(f"    ⚠️  Note: Config lists MLP targets {mlp_target_modules} but no MLP LoRA found")
-            print(f"    ℹ️  StarCoder2-7B uses ATTENTION-ONLY LoRA despite config")
+            print(f"    ℹ️  StarCoder2-3B uses ATTENTION-ONLY LoRA despite config")
     
     # Extract A, B matrices and compute products
     extracted_data = {
@@ -296,7 +288,7 @@ def extract_lora_matrices(checkpoint_path: str, output_dir: str) -> Dict[str, to
     unique_name = f"{parent_dir}_{checkpoint_name}"
     
     # Save A matrices
-    A_path = os.path.join(output_dir, f"starcoder27b_{unique_name}_A_matrices.safetensors")
+    A_path = os.path.join(output_dir, f"starcoder23b_{unique_name}_A_matrices.safetensors")
     safetensors.torch.save_file(extracted_data['A_matrices'], A_path)
     print(f"  💾 Saved A matrices: {A_path}")
     
@@ -305,7 +297,7 @@ def extract_lora_matrices(checkpoint_path: str, output_dir: str) -> Dict[str, to
     gc.collect()
     
     # Save B matrices  
-    B_path = os.path.join(output_dir, f"starcoder27b_{unique_name}_B_matrices.safetensors")
+    B_path = os.path.join(output_dir, f"starcoder23b_{unique_name}_B_matrices.safetensors")
     safetensors.torch.save_file(extracted_data['B_matrices'], B_path)
     print(f"  💾 Saved B matrices: {B_path}")
     
@@ -314,12 +306,12 @@ def extract_lora_matrices(checkpoint_path: str, output_dir: str) -> Dict[str, to
     gc.collect()
     
     # Save AB products (LoRA change matrices)
-    AB_path = os.path.join(output_dir, f"starcoder27b_{unique_name}_AB_products.safetensors")
+    AB_path = os.path.join(output_dir, f"starcoder23b_{unique_name}_AB_products.safetensors")
     safetensors.torch.save_file(extracted_data['AB_products'], AB_path)
     print(f"  💾 Saved AB products: {AB_path}")
     
     # Save metadata
-    metadata_path = os.path.join(output_dir, f"starcoder27b_{unique_name}_metadata.json")
+    metadata_path = os.path.join(output_dir, f"starcoder23b_{unique_name}_metadata.json")
     metadata_to_save = extracted_data['metadata'].copy()
     
     # Add shape information (sample a few modules to avoid memory issues)
@@ -401,7 +393,7 @@ def analyze_matrix_statistics(extracted_data: Dict[str, Dict[str, torch.Tensor]]
 
 
 def compare_across_checkpoints(extracted_data: Dict[str, Dict]) -> None:
-    """Compare matrices across different StarCoder2-7B checkpoints."""
+    """Compare matrices across different StarCoder2-3B checkpoints."""
     print(f"\n🔍 CROSS-CHECKPOINT COMPARISON")
     print("-" * 50)
     
@@ -444,7 +436,6 @@ def compare_across_checkpoints(extracted_data: Dict[str, Dict]) -> None:
                 cos_sim = torch.nn.functional.cosine_similarity(
                     AB1_flat.unsqueeze(0), AB2_flat.unsqueeze(0)
                 ).item()
-                
                 similarities.append(cos_sim)
                 
                 if len(similarities) <= 3:  # Show first 3 modules
@@ -460,12 +451,12 @@ def compare_across_checkpoints(extracted_data: Dict[str, Dict]) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extract LoRA A and B matrices from StarCoder2-7B checkpoints")
+    parser = argparse.ArgumentParser(description="Extract LoRA A and B matrices from StarCoder2-3B checkpoints")
     parser.add_argument("--config", 
-                       default="checkpoints_config.yml",
+                       default="checkpoints_config_starcoder3b.yml",
                        help="YAML configuration file containing checkpoint paths")
     parser.add_argument("--output_dir", 
-                       default="extracted_starcoder27b_matrices",
+                       default="extracted_starcoder23b_matrices",
                        help="Output directory for extracted matrices")
     parser.add_argument("--checkpoints",
                        nargs="*",
@@ -475,7 +466,7 @@ def main():
                        help="Show detailed path information during validation")
     # Backward compatibility - deprecated
     parser.add_argument("--starcoder_dir", 
-                       help="[DEPRECATED] Use --config instead. Directory containing StarCoder2-7B checkpoints")
+                       help="[DEPRECATED] Use --config instead. Directory containing StarCoder2-3B checkpoints")
     parser.add_argument("--create_default_config",
                        action="store_true",
                        help="Create a default configuration file and exit")
@@ -490,13 +481,13 @@ def main():
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
-    print("🚀 StarCoder2-7B LoRA A/B Matrix Extractor")
+    print("🚀 StarCoder2-3B LoRA A/B Matrix Extractor")
     print("=" * 60)
     
     # Handle backward compatibility
     if args.starcoder_dir:
         print("⚠️  WARNING: --starcoder_dir is deprecated. Please use --config with a YAML file.")
-        print(f"📁 Using legacy StarCoder2-7B directory: {args.starcoder_dir}")
+        print(f"📁 Using legacy StarCoder2-3B directory: {args.starcoder_dir}")
         
         # Legacy mode: use old behavior
         default_checkpoints = ["annotated/checkpoint-40000", 
@@ -575,9 +566,9 @@ def main():
         print(f"📁 All results saved to: {args.output_dir}")
         
         # Generate summary report
-        summary_path = os.path.join(args.output_dir, "STARCODER27B_EXTRACTION_SUMMARY.md")
+        summary_path = os.path.join(args.output_dir, "STARCODER23B_EXTRACTION_SUMMARY.md")
         with open(summary_path, 'w') as f:
-            f.write("# StarCoder2-7B LoRA Matrix Extraction Summary\n\n")
+            f.write("# StarCoder2-3B LoRA Matrix Extraction Summary\n\n")
             f.write(f"**Processed Checkpoints:** {len(all_extracted_data)}\n\n")
             
             for checkpoint_name, data in all_extracted_data.items():

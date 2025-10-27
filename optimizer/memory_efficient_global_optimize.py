@@ -35,6 +35,31 @@ def compute_global_normal_equations(organized_dir: str) -> Tuple[np.ndarray, np.
     with open(os.path.join(organized_dir, "master_index.json"), 'r') as f:
         master_index = json.load(f)
     
+    # Get checkpoint names and determine which is the target
+    checkpoints = master_index['checkpoints']
+    print(f"🔍 Found checkpoints: {checkpoints}")
+    
+    # Identify target checkpoint (usually contains 'combined' or 'concatenation')
+    target_checkpoint = None
+    source_checkpoints = []
+    
+    for checkpoint in checkpoints:
+        if any(keyword in checkpoint.lower() for keyword in ['combined', 'concatenation', 'target']):
+            target_checkpoint = checkpoint
+        else:
+            source_checkpoints.append(checkpoint)
+    
+    if target_checkpoint is None:
+        # Default to last checkpoint as target
+        target_checkpoint = checkpoints[-1]
+        source_checkpoints = checkpoints[:-1]
+    
+    print(f"🎯 Target checkpoint: {target_checkpoint}")
+    print(f"🔧 Source checkpoints: {source_checkpoints}")
+    
+    if len(source_checkpoints) != 3:
+        raise ValueError(f"Expected 3 source checkpoints, got {len(source_checkpoints)}")
+    
     # Initialize accumulators
     AtA_global = np.zeros((3, 3))  # A^T A
     Atb_global = np.zeros(3)       # A^T b
@@ -47,16 +72,18 @@ def compute_global_normal_equations(organized_dir: str) -> Tuple[np.ndarray, np.
     
     for i, (layer_module, index) in enumerate(master_index['index_mapping'].items()):
         if i % 32 == 0:  # Progress indicator
-            print(f"   Progress: {i:3d}/128 ({i/128*100:.1f}%)")
+            print(f"   Progress: {i:3d}/{len(master_index['index_mapping'])} ({i/len(master_index['index_mapping'])*100:.1f}%)")
         
         # Load matrices for this combination
         matrix_file = os.path.join(organized_dir, f"index_{index:03d}_{layer_module}_matrices.safetensors")
         
         with safe_open(matrix_file, framework="pt", device="cpu") as f:
-            AB1 = f.get_tensor('singleline').numpy().flatten()
-            AB2 = f.get_tensor('multiline').numpy().flatten()
-            AB3 = f.get_tensor('annotated').numpy().flatten()
-            AB4 = f.get_tensor('concatenationTrained').numpy().flatten()
+            # Get matrices from source checkpoints
+            AB1 = f.get_tensor(source_checkpoints[0]).numpy().flatten()
+            AB2 = f.get_tensor(source_checkpoints[1]).numpy().flatten()
+            AB3 = f.get_tensor(source_checkpoints[2]).numpy().flatten()
+            # Get target matrix
+            AB4 = f.get_tensor(target_checkpoint).numpy().flatten()
         
         # Form local system: A_i = [AB1, AB2, AB3], b_i = AB4
         A_i = np.column_stack([AB1, AB2, AB3])  # Shape: (n_elements_i, 3)
@@ -77,7 +104,10 @@ def compute_global_normal_equations(organized_dir: str) -> Tuple[np.ndarray, np.
     stats = {
         'total_elements': total_elements,
         'total_combinations': len(master_index['index_mapping']),
-        'total_target_norm_sq': total_target_norm_sq
+        'total_target_norm_sq': total_target_norm_sq,
+        'checkpoints': checkpoints,
+        'source_checkpoints': source_checkpoints,
+        'target_checkpoint': target_checkpoint
     }
     
     return AtA_global, Atb_global, stats
@@ -275,8 +305,20 @@ def evaluate_global_solution(global_weights: np.ndarray, AtA: np.ndarray, Atb: n
 def main():
     """Main memory-efficient global optimization"""
     
-    organized_dir = "extracted_starcoder27b_matrices/organized_by_layer_module"
-    output_dir = "memory_efficient_global_optimization"
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Memory-efficient global optimization for LoRA matrices")
+    parser.add_argument("--input_dir", 
+                       required=True,
+                       help="Directory containing organized matrices")
+    parser.add_argument("--output_dir", 
+                       required=True,
+                       help="Output directory for results")
+    
+    args = parser.parse_args()
+    
+    organized_dir = args.input_dir
+    output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
     
     print("🌍 MEMORY-EFFICIENT GLOBAL OPTIMIZATION")
@@ -288,6 +330,12 @@ def main():
     # Check if organized matrices exist
     if not os.path.exists(organized_dir):
         print("❌ Organized matrices not found. Please run organize_matrices_by_layer_module.py first.")
+        return
+    
+    # Check if master index exists
+    master_index_file = os.path.join(organized_dir, "master_index.json")
+    if not os.path.exists(master_index_file):
+        print(f"❌ Master index not found: {master_index_file}")
         return
     
     # Compute global normal equations iteratively
@@ -317,9 +365,13 @@ def main():
     
     print(f"\n🎯 GLOBALLY OPTIMAL WEIGHTS:")
     w1, w2, w3 = global_weights
-    print(f"  w1 (singleline):     {w1:.6f}")
-    print(f"  w2 (multiline):      {w2:.6f}")
-    print(f"  w3 (annotated):      {w3:.6f}")
+    source_checkpoints = stats['source_checkpoints']
+    target_checkpoint = stats['target_checkpoint']
+    
+    print(f"  w1 ({source_checkpoints[0]}): {w1:.6f}")
+    print(f"  w2 ({source_checkpoints[1]}): {w2:.6f}")
+    print(f"  w3 ({source_checkpoints[2]}): {w3:.6f}")
+    print(f"  Target: {target_checkpoint}")
     print(f"  Sum:                 {evaluation['weights_sum']:.10f}")
     print(f"  Constraint violation: {evaluation['constraint_violation']:.2e}")
     
@@ -366,17 +418,30 @@ def main():
     print(f"\n💾 Results saved to: {results_file}")
     
     print(f"\n💡 INTERPRETATION:")
-    if w3 > max(w1, w2):
-        print(f"  🎯 ANNOTATED checkpoint is most important ({w3:.1%})")
-    if w2 > w1:
-        print(f"  📝 MULTILINE > SINGLELINE ({w2:.1%} vs {w1:.1%})")
-    else:
-        print(f"  📝 SINGLELINE > MULTILINE ({w1:.1%} vs {w2:.1%})")
+    
+    # Find which checkpoint has the highest weight
+    max_weight_idx = np.argmax(global_weights)
+    max_checkpoint = source_checkpoints[max_weight_idx]
+    max_weight = global_weights[max_weight_idx]
+    
+    print(f"  🎯 {max_checkpoint} is most important ({max_weight:.1%})")
+    
+    # Compare weights between checkpoints
+    weights_with_names = list(zip(global_weights, source_checkpoints))
+    weights_with_names.sort(reverse=True)
+    
+    for i, (weight, checkpoint) in enumerate(weights_with_names):
+        if i == 0:
+            print(f"  🥇 Highest: {checkpoint} ({weight:.1%})")
+        elif i == 1:
+            print(f"  🥈 Second: {checkpoint} ({weight:.1%})")
+        else:
+            print(f"  🥉 Third: {checkpoint} ({weight:.1%})")
     
     if evaluation['r_squared_approx'] > 0:
         print(f"  ✅ Linear combination explains ~{evaluation['r_squared_approx']*100:.1f}% of variance")
     else:
-        print(f"  ⚠️  ConcatenationTrained has unique emergent properties")
+        print(f"  ⚠️  {target_checkpoint} has unique emergent properties")
     
     print(f"\n🚀 ADVANTAGES OF THIS APPROACH:")
     print(f"  ✅ Globally optimal solution")

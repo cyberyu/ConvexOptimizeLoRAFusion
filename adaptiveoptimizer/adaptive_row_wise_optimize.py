@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-Improved row-wise vector optimization with adaptive constraints.
+Adaptive row-wise LoRA optimization using organized matrices.
+
+This script uses the organized matrices from extracted_matrices/organized_by_layer_module/
+to perform row-wise optimization with adaptive constraints based on convex hull analysis.
 
 Strategy:
 1. For each row, check if target falls within convex hull of [AB1, AB2, AB3]
@@ -15,25 +18,45 @@ import numpy as np
 import json
 import os
 import time
+import argparse
 from typing import Dict, List, Tuple
 from safetensors import safe_open
 
 
-def load_organized_matrices(index: int, layer_module: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Load the four AB matrices for a given layer module"""
-    base_path = "extracted_starcoder27b_matrices/organized_by_layer_module"
+def load_organized_matrices(organized_dir: str, index: int, layer_module: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Load the four AB matrices for a given layer module from organized structure"""
     matrix_file = f"index_{index:03d}_{layer_module}_matrices.safetensors"
-    matrix_path = os.path.join(base_path, matrix_file)
+    matrix_path = os.path.join(organized_dir, matrix_file)
+    
+    if not os.path.exists(matrix_path):
+        raise FileNotFoundError(f"Matrix file not found: {matrix_path}")
     
     matrices = {}
     with safe_open(matrix_path, framework="pt", device="cpu") as f:
         for key in f.keys():
             matrices[key] = f.get_tensor(key).numpy()
     
-    AB1 = matrices['annotated']           # Checkpoint 1
-    AB2 = matrices['multiline']           # Checkpoint 2  
-    AB3 = matrices['singleline']          # Checkpoint 3
-    AB4 = matrices['concatenationTrained'] # Target
+    # Map checkpoint names to our optimization variables
+    # Based on global optimization results: olddata_new has highest weight (45.2%)
+    checkpoint_mapping = {
+        'finetune_starcoder2_olddata_new_checkpoint-40000': 'AB1',      # Highest weight checkpoint
+        'finetune_starcoder2_multiline_new_checkpoint-40000': 'AB2',    # Second highest weight
+        'finetune_starcoder2_singleline_new_checkpoint-40000': 'AB3',   # Third highest weight
+        'finetune_starcoder2_combinedThree_checkpoint-40000': 'AB4'     # Target (to be approximated)
+    }
+    
+    mapped_matrices = {}
+    for checkpoint_key, var_name in checkpoint_mapping.items():
+        if checkpoint_key in matrices:
+            mapped_matrices[var_name] = matrices[checkpoint_key]
+        else:
+            available_keys = list(matrices.keys())
+            raise KeyError(f"Expected checkpoint key '{checkpoint_key}' not found. Available keys: {available_keys}")
+    
+    AB1 = mapped_matrices['AB1']  # olddata_new (highest weight from global optimization)
+    AB2 = mapped_matrices['AB2']  # multiline_new
+    AB3 = mapped_matrices['AB3']  # singleline_new  
+    AB4 = mapped_matrices['AB4']  # combinedThree (target)
     
     return AB1, AB2, AB3, AB4
 
@@ -345,7 +368,7 @@ def optimize_all_combinations_adaptive():
     print()
     
     # Load master index
-    master_index_path = "extracted_starcoder27b_matrices/organized_by_layer_module/master_index.json"
+    master_index_path = "extracted_matrices/organized_by_layer_module/master_index.json"
     with open(master_index_path, 'r') as f:
         master_index = json.load(f)
     
@@ -364,7 +387,8 @@ def optimize_all_combinations_adaptive():
         
         try:
             # Load matrices
-            AB1, AB2, AB3, AB4 = load_organized_matrices(index, layer_module)
+            organized_dir = "extracted_matrices/organized_by_layer_module"
+            AB1, AB2, AB3, AB4 = load_organized_matrices(organized_dir, index, layer_module)
             
             # Run adaptive optimization
             alpha1, alpha2, alpha3, error, results = solve_adaptive_row_wise_optimization(AB1, AB2, AB3, AB4)
