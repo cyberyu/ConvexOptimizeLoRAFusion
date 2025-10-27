@@ -77,7 +77,7 @@ Thumbs.db
 
 # Large data files
 *.csv
-*.png
+
 *.jpg
 *.jpeg
 *.gif
