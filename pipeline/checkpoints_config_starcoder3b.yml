@@ -1,0 +1,32 @@
+# StarCoder2-7B LoRA Checkpoints Configuration
+# This file defines the paths to different LoRA checkpoint directories
+
+checkpoints:
+  annotated:
+    path: "/mnt/teamssd/compressed_LLM_tbricks/finetune_starcoder_3b_AnnotatedOnly/checkpoint-40000"
+    description: "Annotated training data checkpoint"
+    
+  multiline:
+    path: "/mnt/teamssd/compressed_LLM_tbricks/finetune_starcoder_3b_MultiLineOnly/checkpoint-40000/"
+    description: "Multiline training data checkpoint"
+    
+  singleline:
+    path: "/mnt/teamssd/compressed_LLM_tbricks/finetune_starcoder_3b_SingleLineOnly/checkpoint-40000/"
+    description: "Singleline training data checkpoint"
+    
+  concatenationTrained:
+    path: "/mnt/teamssd/compressed_LLM_tbricks/finetune_starcoder2_3b_triple/checkpoint-40000"
+    description: "Concatenation trained checkpoint (target for optimization)"
+
+# Optional settings
+settings:
+  # Verify that all checkpoints exist before processing
+  verify_paths: true
+  
+  # Show detailed path information during processing
+  verbose_paths: true
+  
+  # Additional checkpoints can be added here as needed
+  # custom_checkpoint:
+  #   path: "/path/to/custom/checkpoint"
+  #   description: "Custom checkpoint description"
