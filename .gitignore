@@ -106,3 +106,8 @@ diagnose_*
 fix_*
 validate_*
 visualize_*
+
+# StableCode checkpoint output folders
+combined_ab_products_stablecode_*/
+enhanced_extracted_stablecode_matrices/
+organized_by_layer_module/
