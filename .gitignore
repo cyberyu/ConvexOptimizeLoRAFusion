@@ -89,23 +89,7 @@ Thumbs.db
 *.bak
 *.backup
 
-# Specific to this project
-adaptive_*
-extracted_*
-memory_efficient_*
-optimally_*
-starcoder*
-validation_*
-debug_*
-test_*
-check_*
-create_*
-combine_*
-convert_*
-diagnose_*
-fix_*
-validate_*
-visualize_*
+
 
 # StableCode checkpoint output folders
 combined_ab_products_stablecode_*/
